@@ -1,0 +1,55 @@
+# Core Azure Functions and Storage dependencies
+azure-functions==1.18.0
+azure-storage-blob==12.16.0
+azure-storage-file==2.1.0
+azure-core>=1.28.0,<2.0.0
+
+# OpenAI - FIXED VERSION to resolve proxies error
+openai==1.55.3
+
+# GRPC dependencies
+grpcio
+grpcio-tools
+
+# HTTP and SSL dependencies - PINNED httpx to avoid conflicts
+httpx==0.27.2
+urllib3>=1.26.0,<2.0.0
+requests>=2.31.0
+certifi>=2023.0.0
+
+# Terminal formatting
+termcolor==2.5.0
+colorama==0.4.6
+
+# SharePoint dependencies
+office365-rest-python-client>=2.3.0
+python-docx>=0.8.11
+pypdf>=3.0.0
+msal>=1.20.0
+
+# Additional dependencies
+python-dateutil>=2.8.2
+pydantic==1.10.13
+
+# PowerPoint agent dependencies
+python-pptx>=0.6.21
+
+# Browser Automation and AI Agents dependencies
+azure-ai-projects>=1.0.0b4
+azure-ai-agents>=1.0.0b1
+azure-identity>=1.15.0
+
+# Code Review Agent with full AgentTeam functionality
+pyyaml>=6.0.0
+azure-monitor-opentelemetry>=1.0.0
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+python-dotenv>=1.0.0
+
+# Nexus World Enhancer Agent dependencies
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+html5lib>=1.1
+regex>=2023.0.0
+numpy>=1.24.0
+Pillow>=10.0.0
