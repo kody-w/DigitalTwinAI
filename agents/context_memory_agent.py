@@ -1,5 +1,3 @@
-# PASTE THE CONTENT OF context_memory_agent.py HERE
-# From the artifact "context_memory_agent.py - Memory Recall Agent"
 import logging
 from agents.basic_agent import BasicAgent
 from utils.azure_file_storage import AzureFileStorageManager

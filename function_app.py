@@ -13,9 +13,9 @@ from openai import AzureOpenAI
 from datetime import datetime
 import time
 from utils.azure_file_storage import AzureFileStorageManager, safe_json_loads
+from utils.reflection_engine import ReflectionOrchestrator
 
 # Default GUID to use when no specific user GUID is provided
-# Memorable pattern related to "copilot" that follows UUID format rules
 DEFAULT_USER_GUID = "c0p110t0-aaaa-bbbb-cccc-123456789abc"
 
 def ensure_string_content(message):
@@ -23,28 +23,21 @@ def ensure_string_content(message):
     Ensures message content is converted to a string regardless of input type.
     Handles all edge cases including None, undefined, or missing content.
     """
-    # Handle None or non-dict messages
     if message is None:
         return {"role": "user", "content": ""}
         
     if not isinstance(message, dict):
-        # Convert whatever we have to string
         return {"role": "user", "content": str(message) if message is not None else ""}
     
-    # Create a copy to avoid modifying the original
     message = message.copy()
     
-    # Ensure we have a role
     if 'role' not in message:
         message['role'] = 'user'
     
-    # Handle content - check if it exists and is not None
     if 'content' in message:
         content = message['content']
-        # Convert to string, handling None case
         message['content'] = str(content) if content is not None else ''
     else:
-        # No content key at all
         message['content'] = ''
     
     return message
@@ -57,7 +50,6 @@ def ensure_string_function_args(function_call):
     if not function_call:
         return None
     
-    # Check if function_call has arguments attribute
     if not hasattr(function_call, 'arguments'):
         return None
         
@@ -167,7 +159,6 @@ def load_agents_from_folder():
                 if temp_dir not in sys.path:
                     sys.path.append(temp_dir)
 
-                # Also add the parent directory to sys.path so imports work
                 parent_dir = "/tmp"
                 if parent_dir not in sys.path:
                     sys.path.append(parent_dir)
@@ -176,13 +167,11 @@ def load_agents_from_folder():
                 spec = importlib.util.spec_from_file_location(f"multi_agents.{module_name}", temp_file)
                 module = importlib.util.module_from_spec(spec)
                 
-                # Create the multi_agents package if it doesn't exist
                 import types
                 if 'multi_agents' not in sys.modules:
                     multi_agents_module = types.ModuleType('multi_agents')
                     sys.modules['multi_agents'] = multi_agents_module
                 
-                # Add the module to the multi_agents package
                 sys.modules[f"multi_agents.{module_name}"] = module
                 spec.loader.exec_module(module)
 
@@ -209,12 +198,11 @@ class Assistant:
     def __init__(self, declared_agents):
         self.config = {
             'assistant_name': str(os.environ.get('ASSISTANT_NAME', 'BusinessInsightBot')),
-            'characteristic_description': str(os.environ.get('CHARACTERISTIC_DESCRIPTION', 'helpful business assistant'))
+            'characteristic_description': str(os.environ.get('CHARACTERISTIC_DESCRIPTION', 'helpful business assistant with deep reflection capabilities'))
         }
 
-        # Fixed Azure OpenAI initialization
+        # Azure OpenAI initialization
         try:
-            # Use the correct environment variable names
             api_key = os.environ.get('AZURE_OPENAI_API_KEY')
             endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT')
             api_version = os.environ.get('AZURE_OPENAI_API_VERSION', '2024-02-01')
@@ -234,15 +222,18 @@ class Assistant:
             raise
 
         self.known_agents = self.reload_agents(declared_agents)
-        
-        # Set the default user GUID instead of None
         self.user_guid = DEFAULT_USER_GUID
-        
         self.shared_memory = None
         self.user_memory = None
         self.storage_manager = AzureFileStorageManager()
         
-        # Initialize with the default user GUID memory
+        # Initialize Reflection Orchestrator
+        try:
+            self.reflection_orchestrator = ReflectionOrchestrator()
+        except Exception as e:
+            logging.warning(f"Reflection engine not available: {str(e)}")
+            self.reflection_orchestrator = None
+        
         self._initialize_context_memory(DEFAULT_USER_GUID)
 
     def _check_first_message_for_guid(self, conversation_history):
@@ -270,26 +261,20 @@ class Assistant:
                 self.user_memory = "No specific context memory available."
                 return
 
-            # Limit memory size to prevent crashes
             try:
-                # Always get shared memories with full_recall=True to ensure complete context
-                self.storage_manager.set_memory_context(None)  # Reset to shared context
+                self.storage_manager.set_memory_context(None)
                 shared_result = context_memory_agent.perform(full_recall=True)
-                # Limit shared memory to reasonable size
                 self.shared_memory = str(shared_result)[:5000] if shared_result else "No shared context memory available."
             except Exception as e:
                 logging.warning(f"Error getting shared memory: {str(e)}")
                 self.shared_memory = "Context memory initialization failed."
             
-            # If user_guid provided, get user-specific memories with full_recall=True
-            # If no user_guid is provided, fall back to the default GUID
             if not user_guid:
                 user_guid = DEFAULT_USER_GUID
             
             try:
                 self.storage_manager.set_memory_context(user_guid)
                 user_result = context_memory_agent.perform(user_guid=user_guid, full_recall=True)
-                # Limit user memory to reasonable size
                 self.user_memory = str(user_result)[:5000] if user_result else "No specific context memory available."
             except Exception as e:
                 logging.warning(f"Error getting user memory: {str(e)}")
@@ -300,6 +285,30 @@ class Assistant:
             self.shared_memory = "Context memory initialization failed."
             self.user_memory = "Context memory initialization failed."
     
+    def _generate_reflective_context(self, user_guid):
+        """Generate reflective context using ReflectionOrchestrator if available"""
+        if not self.reflection_orchestrator:
+            return ""
+        
+        try:
+            self.storage_manager.set_memory_context(user_guid)
+            user_memories = self.storage_manager.read_json()
+            
+            self.storage_manager.set_memory_context(None)
+            shared_memories = self.storage_manager.read_json()
+            
+            reflections = self.reflection_orchestrator.generate_comprehensive_reflection(
+                user_memories, 
+                shared_memories
+            )
+            
+            reflection_summary = self.reflection_orchestrator.synthesize_reflection_summary(reflections)
+            
+            return reflection_summary
+        except Exception as e:
+            logging.warning(f"Error generating reflective context: {str(e)}")
+            return ""
+    
     def extract_user_guid(self, text):
         """Try to extract a GUID from user input, but only if it's the entire message"""
         if text is None:
@@ -307,13 +316,11 @@ class Assistant:
             
         text_str = str(text).strip()
         
-        # Only match if the entire message is just a GUID
         guid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
         match = guid_pattern.match(text_str)
         if match:
             return match.group(0)
         
-        # Also allow labeled GUIDs for explicit behavior
         labeled_guid_pattern = re.compile(r'^guid[:=\s]+([0-9a-f-]{36})$', re.IGNORECASE)
         match = labeled_guid_pattern.match(text_str)
         if match:
@@ -351,10 +358,13 @@ class Assistant:
         messages = []
         current_datetime = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
         
-        # System message
-        system_message = {
-            "role": "system",
-            "content": f"""
+        # Generate reflective context if available
+        reflective_context = ""
+        if self.reflection_orchestrator:
+            reflective_context = self._generate_reflective_context(self.user_guid)
+        
+        # System message with optional reflection context
+        system_content = f"""
 <identity>
 You are a Microsoft Copilot assistant named {str(self.config.get('assistant_name', 'Assistant'))}, operating within Microsoft Teams.
 </identity>
@@ -367,13 +377,24 @@ These are memories accessible by all users of the system:
 <specific_memory_output>
 These are memories specific to the current conversation:
 {str(self.user_memory)}
-</specific_memory_output>
+</specific_memory_output>"""
+
+        if reflective_context:
+            system_content += f"""
+
+<reflective_context>
+Deep reflection analysis:
+{reflective_context}
+</reflective_context>"""
+
+        system_content += """
 
 <context_instructions>
 - <shared_memory_output> represents common knowledge shared across all conversations
 - <specific_memory_output> represents specific context for the current conversation
 - Apply specific context with higher precedence than shared context
 - Synthesize information from both contexts for comprehensive responses
+- If available, use <reflective_context> for deeper insights
 </context_instructions>
 
 <agent_usage>
@@ -408,7 +429,6 @@ CRITICAL: You must structure your response in TWO distinct parts separated by th
    - Sound like a colleague speaking casually over a cubicle wall
    - Be natural and conversational, not robotic
    - Focus on the key takeaway or action item
-   - Example: "I found those Q3 sales figures - revenue's up 12 percent from last quarter." or "Sure, I'll pull up that customer data for you right now."
 
 EXAMPLE FORMAT:
 Here's the detailed analysis you requested:
@@ -421,7 +441,8 @@ Here's the detailed analysis you requested:
 Revenue's up 12 percent and customers are happier - looking good for Q3.
 </response_format>
 """
-        }
+        
+        system_message = {"role": "system", "content": system_content}
         messages.append(ensure_string_content(system_message))
         
         # Process conversation history - skip first message if it's just a GUID
@@ -435,7 +456,6 @@ Revenue's up 12 percent and customers are happier - looking good for Q3.
     
     def get_openai_api_call(self, messages):
         try:
-            # Get the deployment name from environment or use default
             deployment_name = os.environ.get('AZURE_OPENAI_DEPLOYMENT_NAME', 'gpt-deployment')
             
             response = self.client.chat.completions.create(
@@ -454,21 +474,16 @@ Revenue's up 12 percent and customers are happier - looking good for Q3.
         if not content:
             return "", ""
         
-        # Split by the delimiter
         parts = content.split("|||VOICE|||")
         
         if len(parts) >= 2:
-            # We have both parts
             formatted_response = parts[0].strip()
             voice_response = parts[1].strip()
         else:
-            # No voice delimiter found, generate a simple voice response
             formatted_response = content.strip()
-            # Extract a simple summary for voice
             sentences = formatted_response.split('.')
             if sentences:
                 voice_response = sentences[0].strip() + "."
-                # Remove any formatting from voice response
                 voice_response = re.sub(r'\*\*|`|#|>|---', '', voice_response)
                 voice_response = re.sub(r'\s+', ' ', voice_response).strip()
             else:
@@ -478,35 +493,27 @@ Revenue's up 12 percent and customers are happier - looking good for Q3.
 
     def get_response(self, prompt, conversation_history, max_retries=3, retry_delay=2):
         try:
-            # Clean up conversation history to prevent memory issues
             if isinstance(conversation_history, list):
-                # Limit conversation history to last 20 messages to prevent memory issues
                 if len(conversation_history) > 20:
                     conversation_history = conversation_history[-20:]
                     logging.info(f"Trimmed conversation history to last 20 messages")
             
-            # Check if this is a first-time initialization with just a GUID
-            # or if a GUID is in the conversation history or current prompt
             guid_from_history = self._check_first_message_for_guid(conversation_history)
             guid_from_prompt = self.extract_user_guid(prompt)
             
             target_guid = guid_from_history or guid_from_prompt
             
-            # Set or update the memory context if we have a GUID that's different from current
             if target_guid and target_guid != self.user_guid:
                 self.user_guid = target_guid
                 self._initialize_context_memory(self.user_guid)
                 logging.info(f"User GUID updated to: {self.user_guid}")
             elif not self.user_guid:
-                # If for some reason we don't have a user_guid, set it to the default
                 self.user_guid = DEFAULT_USER_GUID
                 self._initialize_context_memory(self.user_guid)
                 logging.info(f"Using default User GUID: {self.user_guid}")
             
-            # Ensure prompt is string
             prompt = str(prompt) if prompt is not None else ""
             
-            # Skip processing if the prompt is just a GUID and we've already set the context
             if guid_from_prompt and prompt.strip() == guid_from_prompt and self.user_guid == guid_from_prompt:
                 formatted = "I've successfully loaded your conversation memory. How can I assist you today?"
                 voice = "I've loaded your memory - what can I help you with?"
@@ -523,7 +530,7 @@ Revenue's up 12 percent and customers are happier - looking good for Q3.
                 try:
                     response = self.get_openai_api_call(messages)
                     assistant_msg = response.choices[0].message
-                    msg_contents = assistant_msg.content or ""  # Ensure content is never None
+                    msg_contents = assistant_msg.content or ""
 
                     if not assistant_msg.function_call:
                         formatted_response, voice_response = self.parse_response_with_voice(msg_contents)
@@ -535,30 +542,24 @@ Revenue's up 12 percent and customers are happier - looking good for Q3.
                     if not agent:
                         return f"Agent '{agent_name}' does not exist", "I couldn't find that agent.", ""
 
-                    # Process function call arguments
                     json_data = ensure_string_function_args(assistant_msg.function_call)
                     logging.info(f"JSON data before parsing: {json_data}")
 
                     try:
                         agent_parameters = safe_json_loads(json_data)
                         
-                        # Sanitize parameters - ensure none are undefined or None
                         sanitized_parameters = {}
                         for key, value in agent_parameters.items():
                             if value is None:
-                                sanitized_parameters[key] = ""  # Convert None to empty string
+                                sanitized_parameters[key] = ""
                             else:
                                 sanitized_parameters[key] = value
                         
-                        # Add user_guid to agent parameters if agent accepts it
-                        # Always use the current user_guid (which might be the default)
                         if agent_name in ['ManageMemory', 'ContextMemory']:
                             sanitized_parameters['user_guid'] = self.user_guid
                         
-                        # Always perform agent call - no caching
                         result = agent.perform(**sanitized_parameters)
                         
-                        # Ensure result is a string
                         if result is None:
                             result = "Agent completed successfully"
                         else:
@@ -570,34 +571,27 @@ Revenue's up 12 percent and customers are happier - looking good for Q3.
                         logging.error(f"Error in agent execution: {str(e)}")
                         return f"Error parsing parameters: {str(e)}", "I hit an error processing that.", ""
 
-                    # Add the function result to messages
                     messages.append({
                         "role": "function",
                         "name": agent_name,
                         "content": result
                     })
                     
-                    # EVALUATION: Check if we need a follow-up function call
                     try:
                         result_json = json.loads(result)
-                        # Look for error indicators or incomplete data flags
                         needs_follow_up = False
                         if isinstance(result_json, dict):
-                            # Check for error indicators
                             if result_json.get('error') or result_json.get('status') == 'incomplete':
                                 needs_follow_up = True
-                            # Check for specific indicators that another action is needed
                             if result_json.get('requires_additional_action') == True:
                                 needs_follow_up = True
                     except:
-                        # If we can't parse the result as JSON, assume no follow-up needed
                         needs_follow_up = False
                     
-                    # If we don't need a follow-up, get the final response and return
                     if not needs_follow_up:
                         final_response = self.get_openai_api_call(messages)
                         final_msg = final_response.choices[0].message
-                        final_content = final_msg.content or ""  # Ensure content is never None
+                        final_content = final_msg.content or ""
                         formatted_response, voice_response = self.parse_response_with_voice(final_content)
                         return formatted_response, voice_response, "\n".join(map(str, agent_logs))
 
@@ -647,25 +641,20 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             headers=cors_headers
         )
 
-    # Ensure user_input is string, handle None case
     user_input = req_body.get('user_input')
     if user_input is None:
         user_input = ""
     else:
         user_input = str(user_input)
     
-    # Ensure conversation_history is list and contents are properly formatted
     conversation_history = req_body.get('conversation_history', [])
     if not isinstance(conversation_history, list):
         conversation_history = []
     
-    # Extract user_guid if provided in the request
     user_guid = req_body.get('user_guid')
     
-    # Skip validation if input is just a GUID to load memory
     is_guid_only = re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', user_input.strip(), re.IGNORECASE)
     
-    # Validate user input for non-GUID requests
     if not is_guid_only and not user_input.strip():
         return func.HttpResponse(
             json.dumps({
@@ -678,27 +667,23 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     try:
         agents = load_agents_from_folder()
-        # Create a new Assistant instance for each request
         assistant = Assistant(agents)
         
-        # Set user_guid if provided in the request or found in input
         if user_guid:
             assistant.user_guid = user_guid
             assistant._initialize_context_memory(user_guid)
         elif is_guid_only:
             assistant.user_guid = user_input.strip()
             assistant._initialize_context_memory(user_input.strip())
-        # Otherwise, the default GUID will be used (already set in __init__)
             
         assistant_response, voice_response, agent_logs = assistant.get_response(
             user_input, conversation_history)
 
-        # Include GUID and voice response in output
         response = {
             "assistant_response": str(assistant_response),
             "voice_response": str(voice_response),
             "agent_logs": str(agent_logs),
-            "user_guid": assistant.user_guid  # Return the GUID in use (could be default or provided)
+            "user_guid": assistant.user_guid
         }
 
         return func.HttpResponse(
